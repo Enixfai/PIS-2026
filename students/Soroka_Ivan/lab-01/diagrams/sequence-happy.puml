@@ -1,0 +1,49 @@
+@startuml
+skinparam maxMessageSize 150
+autonumber
+
+actor "Клиент" as Client
+participant "Web UI" as UI
+participant "Ticket API" as API
+participant "Router Service" as Router
+database "PostgreSQL\n(БД)" as DB
+participant "Message Broker\n(RabbitMQ)" as Broker
+participant "Email Service" as Email
+
+Client -> UI: Заполняет форму (Тема, Описание, Категория)
+UI -> API: POST /api/tickets\nHeaders: Idempotency-Key
+activate API
+
+API -> DB: SELECT id WHERE idempotency_key = ?
+DB --> API: null (дублей нет)
+
+API -> DB: BEGIN TRANSACTION
+API -> DB: INSERT INTO tickets (status: NEW)
+DB --> API: ticket_id = "HD-404"
+
+API -> Router: GET /route?category_id=5
+activate Router,
+Router --> API: 200 OK (queue_id = "Billing")
+deactivate Router
+
+API -> DB: UPDATE tickets SET queue_id = "Billing"
+API -> DB: COMMIT TRANSACTION
+
+API -[#blue]> Broker:[Async] Publish Event "TicketCreated" (HD-404)
+activate Broker
+Broker --[#blue]> API: ACK
+deactivate Broker
+
+API --> UI: 201 Created (ticket_id: "HD-404")
+deactivate API
+
+UI --> Client: Показать: "Тикет #HD-404 успешно создан"
+
+note over Broker, Email: Асинхронный процесс
+Broker -[#blue]> Email: Consume "TicketCreated"
+activate Email
+Email -> Email: Генерация шаблона письма
+Email -> Client: Отправка Email: "Ваше обращение принято"
+deactivate Email
+
+@enduml
